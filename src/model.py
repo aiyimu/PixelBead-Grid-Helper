@@ -40,6 +40,7 @@ class ImageModel:
         self._history: list[list[GridLine]] = []
         self._history_index: int = -1
         self._max_history: int = 50
+        self._selected_line_ids: List[int] = []
 
     @property
     def pil_image(self) -> Image.Image | None:
@@ -195,3 +196,69 @@ class ImageModel:
                     new_lines.append(new_line)
         
         self._grid_lines = new_lines
+
+    @property
+    def selected_line_ids(self) -> List[int]:
+        return self._selected_line_ids
+
+    def select_line(self, line_id: int) -> None:
+        if line_id not in self._selected_line_ids:
+            self._selected_line_ids.append(line_id)
+
+    def deselect_line(self, line_id: int) -> None:
+        if line_id in self._selected_line_ids:
+            self._selected_line_ids.remove(line_id)
+
+    def toggle_line_selection(self, line_id: int) -> None:
+        if line_id in self._selected_line_ids:
+            self._selected_line_ids.remove(line_id)
+        else:
+            self._selected_line_ids.append(line_id)
+
+    def select_all(self) -> None:
+        self._selected_line_ids = [line.id for line in self._grid_lines]
+
+    def deselect_all(self) -> None:
+        self._selected_line_ids = []
+
+    def is_line_selected(self, line_id: int) -> bool:
+        return line_id in self._selected_line_ids
+
+    def delete_selected_lines(self) -> int:
+        if not self._selected_line_ids:
+            return 0
+        self._save_state()
+        count = 0
+        new_lines = []
+        for line in self._grid_lines:
+            if line.id not in self._selected_line_ids:
+                new_lines.append(line)
+            else:
+                count += 1
+        self._grid_lines = new_lines
+        self._selected_line_ids = []
+        return count
+
+    def get_lines_in_rect(self, x1: int, y1: int, x2: int, y2: int) -> List[int]:
+        min_x = min(x1, x2)
+        max_x = max(x1, x2)
+        min_y = min(y1, y2)
+        max_y = max(y1, y2)
+        
+        result = []
+        for line in self._grid_lines:
+            if line.orientation == 'horizontal':
+                line_start = line.start
+                line_end = line.end if line.end is not None else (self._pil_image.width if self._pil_image else 0)
+                
+                if min_y <= line.position <= max_y:
+                    if not (line_end < min_x or line_start > max_x):
+                        result.append(line.id)
+            else:
+                line_start = line.start
+                line_end = line.end if line.end is not None else (self._pil_image.height if self._pil_image else 0)
+                
+                if min_x <= line.position <= max_x:
+                    if not (line_end < min_y or line_start > max_y):
+                        result.append(line.id)
+        return result

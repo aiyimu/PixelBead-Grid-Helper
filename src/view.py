@@ -2,8 +2,8 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QToolBar, QPushButton, QLabel, QFrame, QScrollArea, QFileDialog, QComboBox, QSpinBox, QDialog, QTextEdit
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QRect, QRectF
-from PyQt6.QtGui import QPixmap, QPainter, QPen, QCursor, QShortcut, QKeySequence, QColor, QBrush
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QRect, QSize
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QCursor, QShortcut, QKeySequence, QColor, QBrush, QWheelEvent, QMouseEvent
 
 
 THEMES = {
@@ -66,49 +66,76 @@ class HelpDialog(QDialog):
             <ul>
                 <li><b>Ctrl + Z</b> - 撤销操作</li>
                 <li><b>Ctrl + Y</b> - 重做操作</li>
+                <li><b>Ctrl + A</b> - 全选</li>
+                <li><b>Ctrl + Shift + A</b> - 取消全选</li>
                 <li><b>Delete</b> - 删除选中的线</li>
-                <li><b>Esc</b> - 取消裁剪模式</li>
+                <li><b>Esc</b> - 取消裁剪模式/取消选择</li>
+                <li><b>Space</b> - 按住平移画布</li>
+                <li><b>Mouse Wheel</b> - 缩放</li>
+                <li><b>Middle Mouse</b> - 平移画布</li>
             </ul>
             <h3>操作说明</h3>
             <ul>
                 <li>点击"添加横线"/"添加纵线"，然后在图片上点击添加线</li>
+                <li>点击线选中，Shift+点击多选</li>
                 <li>选中线后，可以拖动改变位置</li>
                 <li>选中线后，点击"补全横线"/"补全纵线"自动补全</li>
                 <li>点击"裁剪"按钮，拖动鼠标画选框，确认裁剪后截断相交的线</li>
                 <li>点击"导出"按钮，保存图片+网格线为图片文件</li>
                 <li>可以通过"主题"下拉框切换界面风格</li>
+                <li>鼠标滚轮缩放，按住空格键或中键拖拽平移画布</li>
             </ul>
         """)
         layout.addWidget(help_text)
 
 
-class ImageCanvas(QLabel):
+class CanvasWidget(QWidget):
     canvas_clicked = pyqtSignal(int, int)
     line_dragged = pyqtSignal(int, int)
     line_deleted = pyqtSignal(int)
     line_selected = pyqtSignal(int)
-    line_unselected = pyqtSignal()
+    line_toggled = pyqtSignal(int)
+    all_deselected = pyqtSignal()
     crop_confirmed = pyqtSignal(int, int, int, int)
+    scale_changed = pyqtSignal(float)
+    rect_selection_confirmed = pyqtSignal(int, int, int, int)
+    delete_selected_requested = pyqtSignal()
+    select_all_requested = pyqtSignal()
+    deselect_all_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pixmap: QPixmap | None = None
         self._grid_lines: list = []
+        self._selected_line_ids: list[int] = []
         self._scale_factor: float = 1.0
+        self._min_scale: float = 0.1
+        self._max_scale: float = 5.0
         self._offset: QPoint = QPoint(0, 0)
+        self._pan_offset: QPoint = QPoint(0, 0)
         self._theme = THEMES["暗色标准"]
+
+        self._is_panning: bool = False
+        self._last_pan_pos: QPoint = QPoint(0, 0)
+        self._is_space_pressed: bool = False
 
         self._is_adding_line: bool = False
         self._adding_orientation: str | None = None
 
-        self._selected_line_id: int | None = None
         self._is_dragging: bool = False
         self._drag_start_pos: QPoint = QPoint(0, 0)
-        self._drag_line_original_pos: int = 0
+        self._drag_line_original_pos: dict[int, int] = {}
+        self._dragging_lines: list[int] = []
 
         self._is_cropping: bool = False
         self._crop_start_pos: QPoint = QPoint(0, 0)
         self._crop_end_pos: QPoint = QPoint(0, 0)
+
+        self._is_rect_selecting: bool = False
+        self._rect_select_start_pos: QPoint = QPoint(0, 0)
+        self._rect_select_end_pos: QPoint = QPoint(0, 0)
+
+        self._tool_mode: str = "select"
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -123,63 +150,176 @@ class ImageCanvas(QLabel):
 
     def set_pixmap(self, pixmap: QPixmap) -> None:
         self._pixmap = pixmap
+        self._scale_factor = 1.0
+        self._pan_offset = QPoint(0, 0)
+        self.scale_changed.emit(self._scale_factor)
         self.update()
+
+    def fit_to_screen(self) -> None:
+        if not self._pixmap:
+            return
+        widget_size = self.size()
+        pixmap_size = self._pixmap.size()
+        scale_x = widget_size.width() / pixmap_size.width()
+        scale_y = widget_size.height() / pixmap_size.height()
+        self._scale_factor = min(scale_x, scale_y) * 0.9
+        self._scale_factor = max(self._min_scale, min(self._max_scale, self._scale_factor))
+        self._pan_offset = QPoint(0, 0)
+        self.scale_changed.emit(self._scale_factor)
+        self.update()
+
+    def set_100_percent(self) -> None:
+        self._scale_factor = 1.0
+        self._pan_offset = QPoint(0, 0)
+        self.scale_changed.emit(self._scale_factor)
+        self.update()
+
+    def zoom_in(self) -> None:
+        self._scale_by(1.2, QPoint(int(self.width() / 2), int(self.height() / 2)))
+
+    def zoom_out(self) -> None:
+        self._scale_by(0.8, QPoint(int(self.width() / 2), int(self.height() / 2)))
+
+    def _scale_by(self, factor: float, center: QPoint) -> None:
+        if not self._pixmap:
+            return
+        old_scale = self._scale_factor
+        new_scale = old_scale * factor
+        new_scale = max(self._min_scale, min(self._max_scale, new_scale))
+        
+        if new_scale != old_scale:
+            scaled_size = QSize(
+                int(self._pixmap.width() * old_scale),
+                int(self._pixmap.height() * old_scale)
+            )
+            old_x = (self.width() - scaled_size.width()) // 2 + self._pan_offset.x()
+            old_y = (self.height() - scaled_size.height()) // 2 + self._pan_offset.y()
+            
+            self._scale_factor = new_scale
+            
+            new_scaled_size = QSize(
+                int(self._pixmap.width() * new_scale),
+                int(self._pixmap.height() * new_scale)
+            )
+            new_x = (self.width() - new_scaled_size.width()) // 2 + self._pan_offset.x()
+            new_y = (self.height() - new_scaled_size.height()) // 2 + self._pan_offset.y()
+            
+            delta_x = old_x - new_x
+            delta_y = old_y - new_y
+            self._pan_offset += QPoint(int(delta_x), int(delta_y))
+            self._clamp_pan_offset()
+            self.scale_changed.emit(self._scale_factor)
+            self.update()
+    
+    def _clamp_pan_offset(self) -> None:
+        if not self._pixmap:
+            return
+        scaled_size = QSize(
+            int(self._pixmap.width() * self._scale_factor),
+            int(self._pixmap.height() * self._scale_factor)
+        )
+        max_pan_x = max(0, scaled_size.width() // 2)
+        max_pan_y = max(0, scaled_size.height() // 2)
+        min_pan_x = -max_pan_x
+        min_pan_y = -max_pan_y
+        
+        new_x = max(min_pan_x, min(max_pan_x, self._pan_offset.x()))
+        new_y = max(min_pan_y, min(max_pan_y, self._pan_offset.y()))
+        self._pan_offset = QPoint(new_x, new_y)
 
     def set_grid_lines(self, lines: list) -> None:
         self._grid_lines = lines
         self.update()
 
+    def set_selected_line_ids(self, ids: list[int]) -> None:
+        self._selected_line_ids = ids
+        self.update()
+
     def set_adding_mode(self, orientation: str | None) -> None:
         self._is_adding_line = orientation is not None
         self._adding_orientation = orientation
-        if orientation:
-            self.setCursor(Qt.CursorShape.CrossCursor)
-        elif self._is_cropping:
-            self.setCursor(Qt.CursorShape.CrossCursor)
-        else:
-            self.setCursor(Qt.CursorShape.ArrowCursor)
+        self._tool_mode = "add" if orientation else "select"
+        self._update_cursor()
 
     def set_cropping_mode(self, is_cropping: bool) -> None:
         self._is_cropping = is_cropping
         if is_cropping:
+            self._tool_mode = "crop"
+        else:
+            self._tool_mode = "select"
+        self._update_cursor()
+
+    def set_tool_mode(self, mode: str) -> None:
+        self._tool_mode = mode
+        self._update_cursor()
+
+    def _update_cursor(self) -> None:
+        if self._is_panning:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif self._is_space_pressed:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif self._tool_mode == "add" and self._is_adding_line:
             self.setCursor(Qt.CursorShape.CrossCursor)
-        elif self._is_adding_line:
+        elif self._tool_mode == "crop":
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        elif self._tool_mode == "rect_select":
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
-            self.setCursor(Qt.CursorShape.ArrowCursor)
+            line_id = self._get_line_at(self.mapFromGlobal(self.cursor().pos()))
+            if line_id is not None:
+                line = self._get_line_by_id(line_id)
+                if line:
+                    if line.orientation == 'horizontal':
+                        self.setCursor(Qt.CursorShape.SizeVerCursor)
+                    else:
+                        self.setCursor(Qt.CursorShape.SizeHorCursor)
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         if self._pixmap:
+            scaled_size = QSize(
+                int(self._pixmap.width() * self._scale_factor),
+                int(self._pixmap.height() * self._scale_factor)
+            )
             scaled_pixmap = self._pixmap.scaled(
-                self.size(),
+                scaled_size,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
-            self._scale_factor = scaled_pixmap.width() / self._pixmap.width() if self._pixmap.width() > 0 else 1.0
-            x = (self.width() - scaled_pixmap.width()) // 2
-            y = (self.height() - scaled_pixmap.height()) // 2
+            
+            x = (self.width() - scaled_pixmap.width()) // 2 + self._pan_offset.x()
+            y = (self.height() - scaled_pixmap.height()) // 2 + self._pan_offset.y()
             self._offset = QPoint(x, y)
             painter.drawPixmap(x, y, scaled_pixmap)
 
             for line in self._grid_lines:
-                pen = QPen(line.color, 2)
-                if line.id == self._selected_line_id:
-                    pen.setWidth(3)
+                is_selected = line.id in self._selected_line_ids
+                if is_selected:
+                    pen = QPen(QColor(255, 0, 0), max(2, int(3 * self._scale_factor)))
+                else:
+                    pen = QPen(line.color, max(1, int(2 * self._scale_factor)))
                 painter.setPen(pen)
 
                 if line.orientation == 'horizontal':
                     y_pos = y + int(line.position * self._scale_factor)
                     x_start = x + int(line.start * self._scale_factor)
-                    x_end = x + int((line.end if line.end is not None else scaled_pixmap.width() / self._scale_factor) * self._scale_factor)
+                    x_end = x + int((line.end if line.end is not None else self._pixmap.width()) * self._scale_factor)
                     painter.drawLine(x_start, y_pos, x_end, y_pos)
+                    
+                    if is_selected:
+                        self._draw_control_points(painter, x_start, y_pos, x_end, y_pos)
                 else:
                     x_pos = x + int(line.position * self._scale_factor)
                     y_start = y + int(line.start * self._scale_factor)
-                    y_end = y + int((line.end if line.end is not None else scaled_pixmap.height() / self._scale_factor) * self._scale_factor)
+                    y_end = y + int((line.end if line.end is not None else self._pixmap.height()) * self._scale_factor)
                     painter.drawLine(x_pos, y_start, x_pos, y_end)
+                    
+                    if is_selected:
+                        self._draw_control_points(painter, x_pos, y_start, x_pos, y_end)
 
             if self._is_cropping:
                 crop_rect = QRect(self._crop_start_pos, self._crop_end_pos).normalized()
@@ -187,105 +327,205 @@ class ImageCanvas(QLabel):
                 painter.setBrush(QBrush(QColor(255, 255, 0, 50)))
                 painter.drawRect(crop_rect)
 
-    def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            if self._is_cropping and self._pixmap:
+            if self._is_rect_selecting:
+                rect = QRect(self._rect_select_start_pos, self._rect_select_end_pos).normalized()
+                painter.setPen(QPen(QColor(0, 120, 215), 2, Qt.PenStyle.DashLine))
+                painter.setBrush(QBrush(QColor(0, 120, 215, 50)))
+                painter.drawRect(rect)
+
+    def _draw_control_points(self, painter: QPainter, x1: int, y1: int, x2: int, y2: int) -> None:
+        point_size = max(4, int(6 * self._scale_factor))
+        half_size = point_size // 2
+        
+        points = [
+            QPoint(x1, y1),
+            QPoint((x1 + x2) // 2, (y1 + y2) // 2),
+            QPoint(x2, y2)
+        ]
+        
+        painter.setPen(QPen(QColor(0, 0, 0), 1))
+        painter.setBrush(QBrush(QColor(255, 255, 255)))
+        for point in points:
+            rect = QRect(point.x() - half_size, point.y() - half_size, point_size, point_size)
+            painter.drawRect(rect)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        zoom_in = event.angleDelta().y() > 0
+        factor = 1.1 if zoom_in else 0.9
+        self._scale_by(factor, event.position().toPoint())
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton or (event.button() == Qt.MouseButton.LeftButton and self._is_space_pressed):
+            self._is_panning = True
+            self._last_pan_pos = event.pos()
+            if self._is_space_pressed:
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            else:
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif event.button() == Qt.MouseButton.LeftButton:
+            if self._tool_mode == "crop" and self._is_cropping and self._pixmap:
                 self._crop_start_pos = event.pos()
                 self._crop_end_pos = event.pos()
                 self.update()
-            elif self._is_adding_line and self._pixmap:
+            elif self._tool_mode == "rect_select" and self._pixmap:
+                self._is_rect_selecting = True
+                self._rect_select_start_pos = event.pos()
+                self._rect_select_end_pos = event.pos()
+                self.update()
+            elif self._tool_mode == "add" and self._is_adding_line and self._pixmap:
                 img_x, img_y = self._to_image_coords(event.pos())
                 if 0 <= img_x < self._pixmap.width() and 0 <= img_y < self._pixmap.height():
                     if self._adding_orientation == 'horizontal':
                         self.canvas_clicked.emit(img_x, img_y)
                     else:
                         self.canvas_clicked.emit(img_x, img_y)
-            else:
+            elif self._tool_mode == "select" and self._pixmap:
                 line_id = self._get_line_at(event.pos())
                 if line_id is not None:
-                    old_selected = self._selected_line_id
-                    self._selected_line_id = line_id
-                    self._is_dragging = True
-                    self._drag_start_pos = event.pos()
-                    line = self._get_line_by_id(line_id)
-                    if line:
-                        self._drag_line_original_pos = line.position
-                    if old_selected != line_id:
-                        self.line_selected.emit(line_id)
-                    self.update()
+                    if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                        self.line_toggled.emit(line_id)
+                    else:
+                        if line_id not in self._selected_line_ids:
+                            self.line_selected.emit(line_id)
+                        self._is_dragging = True
+                        self._drag_start_pos = event.pos()
+                        self._dragging_lines = list(self._selected_line_ids)
+                        self._drag_line_original_pos = {}
+                        for lid in self._dragging_lines:
+                            line = self._get_line_by_id(lid)
+                            if line:
+                                self._drag_line_original_pos[lid] = line.position
                 else:
-                    if self._selected_line_id is not None:
-                        self._selected_line_id = None
-                        self.line_unselected.emit()
-                        self.update()
+                    self.all_deselected.emit()
+                    self.update()
 
-    def mouseMoveEvent(self, event) -> None:
-        if self._is_cropping and event.buttons() == Qt.MouseButton.LeftButton:
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._is_panning:
+            delta = event.pos() - self._last_pan_pos
+            self._pan_offset += delta
+            self._clamp_pan_offset()
+            self._last_pan_pos = event.pos()
+            self.update()
+        elif self._is_cropping and event.buttons() == Qt.MouseButton.LeftButton:
             self._crop_end_pos = event.pos()
             self.update()
-        elif self._is_dragging and self._selected_line_id is not None and self._pixmap:
-            line = self._get_line_by_id(self._selected_line_id)
-            if line:
-                delta = event.pos() - self._drag_start_pos
-                if line.orientation == 'horizontal':
-                    new_pos = self._drag_line_original_pos + int(delta.y() / self._scale_factor)
-                    new_pos = max(0, min(new_pos, self._pixmap.height()))
-                else:
-                    new_pos = self._drag_line_original_pos + int(delta.x() / self._scale_factor)
-                    new_pos = max(0, min(new_pos, self._pixmap.width()))
-                self.line_dragged.emit(self._selected_line_id, new_pos)
-        else:
-            line_id = self._get_line_at(event.pos())
-            if line_id is not None and not self._is_cropping and not self._is_adding_line:
+        elif self._is_rect_selecting and event.buttons() == Qt.MouseButton.LeftButton:
+            self._rect_select_end_pos = event.pos()
+            self.update()
+        elif self._is_dragging and self._dragging_lines and self._pixmap:
+            img_start_x, img_start_y = self._to_image_coords(self._drag_start_pos)
+            img_current_x, img_current_y = self._to_image_coords(event.pos())
+            
+            for line_id in self._dragging_lines:
                 line = self._get_line_by_id(line_id)
-                if line:
+                if line and line_id in self._drag_line_original_pos:
                     if line.orientation == 'horizontal':
-                        self.setCursor(Qt.CursorShape.SizeVerCursor)
+                        delta = img_current_y - img_start_y
+                        new_pos = self._drag_line_original_pos[line_id] + delta
+                        new_pos = max(0, min(new_pos, self._pixmap.height()))
                     else:
-                        self.setCursor(Qt.CursorShape.SizeHorCursor)
-            elif not self._is_cropping and not self._is_adding_line:
-                self.setCursor(Qt.CursorShape.ArrowCursor)
+                        delta = img_current_x - img_start_x
+                        new_pos = self._drag_line_original_pos[line_id] + delta
+                        new_pos = max(0, min(new_pos, self._pixmap.width()))
+                    self.line_dragged.emit(line_id, new_pos)
+        else:
+            self._update_cursor()
 
-    def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton or (event.button() == Qt.MouseButton.LeftButton and self._is_panning):
+            self._is_panning = False
+            self._update_cursor()
+        elif event.button() == Qt.MouseButton.LeftButton:
             if self._is_cropping and self._pixmap:
                 x1, y1 = self._to_image_coords(self._crop_start_pos)
                 x2, y2 = self._to_image_coords(self._crop_end_pos)
                 self.crop_confirmed.emit(x1, y1, x2, y2)
+            elif self._is_rect_selecting and self._pixmap:
+                x1, y1 = self._to_image_coords(self._rect_select_start_pos)
+                x2, y2 = self._to_image_coords(self._rect_select_end_pos)
+                self.rect_selection_confirmed.emit(x1, y1, x2, y2)
+                self._is_rect_selecting = False
             self._is_dragging = False
+            self._dragging_lines = []
+            self._drag_line_original_pos = {}
 
     def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key.Key_Delete and self._selected_line_id is not None:
-            self.line_deleted.emit(self._selected_line_id)
-            self._selected_line_id = None
-            self.update()
+        if event.key() == Qt.Key.Key_Delete:
+            self.delete_selected_requested.emit()
         elif event.key() == Qt.Key.Key_Escape:
-            self._is_cropping = False
-            self._crop_start_pos = QPoint(0, 0)
-            self._crop_end_pos = QPoint(0, 0)
-            self.update()
-            self.set_cropping_mode(False)
+            if self._is_cropping:
+                self._is_cropping = False
+                self._crop_start_pos = QPoint(0, 0)
+                self._crop_end_pos = QPoint(0, 0)
+                self.update()
+                self.set_cropping_mode(False)
+            elif self._is_rect_selecting:
+                self._is_rect_selecting = False
+                self._rect_select_start_pos = QPoint(0, 0)
+                self._rect_select_end_pos = QPoint(0, 0)
+                self.update()
+            else:
+                self.all_deselected.emit()
+        elif event.key() == Qt.Key.Key_Space and not self._is_space_pressed:
+            self._is_space_pressed = True
+            self._update_cursor()
+        elif event.key() == Qt.Key.Key_A and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.deselect_all_requested.emit()
+            else:
+                self.select_all_requested.emit()
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Space:
+            self._is_space_pressed = False
+            self._is_panning = False
+            self._update_cursor()
+        super().keyReleaseEvent(event)
 
     def _to_image_coords(self, pos: QPoint) -> tuple[int, int]:
-        x = int((pos.x() - self._offset.x()) / self._scale_factor)
-        y = int((pos.y() - self._offset.y()) / self._scale_factor)
-        return x, y
+        if not self._pixmap:
+            return 0, 0
+        scaled_size = QSize(
+            int(self._pixmap.width() * self._scale_factor),
+            int(self._pixmap.height() * self._scale_factor)
+        )
+        x = (self.width() - scaled_size.width()) // 2 + self._pan_offset.x()
+        y = (self.height() - scaled_size.height()) // 2 + self._pan_offset.y()
+        
+        img_x = int((pos.x() - x) / self._scale_factor)
+        img_y = int((pos.y() - y) / self._scale_factor)
+        return img_x, img_y
 
     def _get_line_at(self, pos: QPoint) -> int | None:
-        threshold = 5
+        threshold = max(3, int(5 * self._scale_factor))
         for line in reversed(self._grid_lines):
             if line.orientation == 'horizontal':
-                y_pos = self._offset.y() + int(line.position * self._scale_factor)
+                scaled_size = QSize(
+                    int(self._pixmap.width() * self._scale_factor),
+                    int(self._pixmap.height() * self._scale_factor)
+                )
+                x = (self.width() - scaled_size.width()) // 2 + self._pan_offset.x()
+                y = (self.height() - scaled_size.height()) // 2 + self._pan_offset.y()
+                
+                y_pos = y + int(line.position * self._scale_factor)
                 if abs(pos.y() - y_pos) <= threshold:
-                    x_min = self._offset.x() + int(line.start * self._scale_factor)
-                    x_max = self._offset.x() + int((line.end if line.end is not None else (self._pixmap.width() if self._pixmap else 0)) * self._scale_factor)
+                    x_min = x + int(line.start * self._scale_factor)
+                    x_max = x + int((line.end if line.end is not None else (self._pixmap.width() if self._pixmap else 0)) * self._scale_factor)
                     if x_min <= pos.x() <= x_max:
                         return line.id
             else:
-                x_pos = self._offset.x() + int(line.position * self._scale_factor)
+                scaled_size = QSize(
+                    int(self._pixmap.width() * self._scale_factor),
+                    int(self._pixmap.height() * self._scale_factor)
+                )
+                x = (self.width() - scaled_size.width()) // 2 + self._pan_offset.x()
+                y = (self.height() - scaled_size.height()) // 2 + self._pan_offset.y()
+                
+                x_pos = x + int(line.position * self._scale_factor)
                 if abs(pos.x() - x_pos) <= threshold:
-                    y_min = self._offset.y() + int(line.start * self._scale_factor)
-                    y_max = self._offset.y() + int((line.end if line.end is not None else (self._pixmap.height() if self._pixmap else 0)) * self._scale_factor)
+                    y_min = y + int(line.start * self._scale_factor)
+                    y_max = y + int((line.end if line.end is not None else (self._pixmap.height() if self._pixmap else 0)) * self._scale_factor)
                     if y_min <= pos.y() <= y_max:
                         return line.id
         return None
@@ -295,9 +535,6 @@ class ImageCanvas(QLabel):
             if line.id == line_id:
                 return line
         return None
-
-    def get_selected_line_id(self) -> int | None:
-        return self._selected_line_id
 
     def render_to_pixmap(self) -> QPixmap | None:
         if not self._pixmap:
@@ -339,11 +576,13 @@ class MainWindow(QMainWindow):
     redo_requested = pyqtSignal()
     crop_requested = pyqtSignal()
     export_requested = pyqtSignal()
+    select_tool_requested = pyqtSignal()
+    rect_select_tool_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PixelBead Grid Helper")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1400, 900)
         self._current_pixmap: QPixmap | None = None
         self._current_theme = "暗色标准"
         self._setup_ui()
@@ -357,18 +596,59 @@ class MainWindow(QMainWindow):
         self.open_button = QPushButton("打开")
         self.open_button.clicked.connect(self._on_open_clicked)
         toolbar.addWidget(self.open_button)
-
-        self.crop_button = QPushButton("裁剪")
-        self.crop_button.clicked.connect(self._on_crop_clicked)
-        toolbar.addWidget(self.crop_button)
-
+        toolbar.addWidget(QPushButton("保存"))
         self.export_button = QPushButton("导出")
         self.export_button.clicked.connect(self._on_export_clicked)
         toolbar.addWidget(self.export_button)
 
-        toolbar.addWidget(QPushButton("保存"))
+        toolbar.addSeparator()
+
         toolbar.addWidget(QPushButton("撤销"))
         toolbar.addWidget(QPushButton("重做"))
+        self.delete_button = QPushButton("删除")
+        self.delete_button.clicked.connect(self._on_delete_clicked)
+        toolbar.addWidget(self.delete_button)
+
+        toolbar.addSeparator()
+
+        self.zoom_in_button = QPushButton("放大")
+        self.zoom_in_button.clicked.connect(self._on_zoom_in_clicked)
+        toolbar.addWidget(self.zoom_in_button)
+        self.zoom_out_button = QPushButton("缩小")
+        self.zoom_out_button.clicked.connect(self._on_zoom_out_clicked)
+        toolbar.addWidget(self.zoom_out_button)
+        self.zoom_100_button = QPushButton("100%")
+        self.zoom_100_button.clicked.connect(self._on_zoom_100_clicked)
+        toolbar.addWidget(self.zoom_100_button)
+        self.zoom_fit_button = QPushButton("适应屏幕")
+        self.zoom_fit_button.clicked.connect(self._on_zoom_fit_clicked)
+        toolbar.addWidget(self.zoom_fit_button)
+
+        toolbar.addSeparator()
+
+        self.select_button = QPushButton("选择")
+        self.select_button.clicked.connect(self._on_select_tool_clicked)
+        toolbar.addWidget(self.select_button)
+        self.rect_select_button = QPushButton("框选")
+        self.rect_select_button.clicked.connect(self._on_rect_select_tool_clicked)
+        toolbar.addWidget(self.rect_select_button)
+        self.add_h_line_btn = QPushButton("添加横线")
+        self.add_h_line_btn.clicked.connect(self._on_add_h_line_clicked)
+        toolbar.addWidget(self.add_h_line_btn)
+        self.add_v_line_btn = QPushButton("添加纵线")
+        self.add_v_line_btn.clicked.connect(self._on_add_v_line_clicked)
+        toolbar.addWidget(self.add_v_line_btn)
+        self.fill_h_btn = QPushButton("补全横线")
+        self.fill_h_btn.clicked.connect(self._on_fill_h_clicked)
+        self.fill_h_btn.setEnabled(False)
+        toolbar.addWidget(self.fill_h_btn)
+        self.fill_v_btn = QPushButton("补全纵线")
+        self.fill_v_btn.clicked.connect(self._on_fill_v_clicked)
+        self.fill_v_btn.setEnabled(False)
+        toolbar.addWidget(self.fill_v_btn)
+        self.crop_button = QPushButton("裁剪")
+        self.crop_button.clicked.connect(self._on_crop_clicked)
+        toolbar.addWidget(self.crop_button)
 
         toolbar.addSeparator()
 
@@ -392,8 +672,10 @@ class MainWindow(QMainWindow):
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        self.canvas = ImageCanvas()
+        self.canvas = CanvasWidget()
         scroll_area.setWidget(self.canvas)
 
         main_layout.addWidget(scroll_area, stretch=3)
@@ -406,13 +688,13 @@ class MainWindow(QMainWindow):
         toolbox_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         toolbox_layout.addWidget(toolbox_label)
 
-        self.add_h_line_btn = QPushButton("添加横线")
-        self.add_h_line_btn.clicked.connect(self._on_add_h_line_clicked)
-        toolbox_layout.addWidget(self.add_h_line_btn)
+        self.add_h_line_btn2 = QPushButton("添加横线")
+        self.add_h_line_btn2.clicked.connect(self._on_add_h_line_clicked)
+        toolbox_layout.addWidget(self.add_h_line_btn2)
 
-        self.add_v_line_btn = QPushButton("添加纵线")
-        self.add_v_line_btn.clicked.connect(self._on_add_v_line_clicked)
-        toolbox_layout.addWidget(self.add_v_line_btn)
+        self.add_v_line_btn2 = QPushButton("添加纵线")
+        self.add_v_line_btn2.clicked.connect(self._on_add_v_line_clicked)
+        toolbox_layout.addWidget(self.add_v_line_btn2)
 
         self.delete_line_btn = QPushButton("删除选中")
         self.delete_line_btn.clicked.connect(self._on_delete_line_clicked)
@@ -430,17 +712,21 @@ class MainWindow(QMainWindow):
         spacing_layout.addWidget(self.spacing_spinbox)
         toolbox_layout.addLayout(spacing_layout)
 
-        self.fill_h_btn = QPushButton("补全横线")
-        self.fill_h_btn.clicked.connect(self._on_fill_h_clicked)
-        self.fill_h_btn.setEnabled(False)
-        toolbox_layout.addWidget(self.fill_h_btn)
+        self.fill_h_btn2 = QPushButton("补全横线")
+        self.fill_h_btn2.clicked.connect(self._on_fill_h_clicked)
+        self.fill_h_btn2.setEnabled(False)
+        toolbox_layout.addWidget(self.fill_h_btn2)
 
-        self.fill_v_btn = QPushButton("补全纵线")
-        self.fill_v_btn.clicked.connect(self._on_fill_v_clicked)
-        self.fill_v_btn.setEnabled(False)
-        toolbox_layout.addWidget(self.fill_v_btn)
+        self.fill_v_btn2 = QPushButton("补全纵线")
+        self.fill_v_btn2.clicked.connect(self._on_fill_v_clicked)
+        self.fill_v_btn2.setEnabled(False)
+        toolbox_layout.addWidget(self.fill_v_btn2)
 
         toolbox_layout.addStretch()
+
+        self.selection_count_label = QLabel("当前选中：0 条线")
+        self.selection_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        toolbox_layout.addWidget(self.selection_count_label)
 
         main_layout.addWidget(toolbox_frame, stretch=1)
 
@@ -460,11 +746,41 @@ class MainWindow(QMainWindow):
     def _on_export_clicked(self) -> None:
         self.export_requested.emit()
 
+    def _on_zoom_in_clicked(self) -> None:
+        self.canvas.zoom_in()
+
+    def _on_zoom_out_clicked(self) -> None:
+        self.canvas.zoom_out()
+
+    def _on_zoom_100_clicked(self) -> None:
+        self.canvas.set_100_percent()
+
+    def _on_zoom_fit_clicked(self) -> None:
+        self.canvas.fit_to_screen()
+
+    def _on_select_tool_clicked(self) -> None:
+        self.canvas.set_tool_mode("select")
+        self.select_tool_requested.emit()
+        self._update_tool_buttons("select")
+
+    def _on_rect_select_tool_clicked(self) -> None:
+        self.canvas.set_tool_mode("rect_select")
+        self.rect_select_tool_requested.emit()
+        self._update_tool_buttons("rect_select")
+
+    def _update_tool_buttons(self, active_tool: str) -> None:
+        theme = THEMES[self._current_theme]
+        self.select_button.setStyleSheet(f"background-color: {theme['accent']};" if active_tool == "select" else "")
+        self.rect_select_button.setStyleSheet(f"background-color: {theme['accent']};" if active_tool == "rect_select" else "")
+
     def _on_add_h_line_clicked(self) -> None:
         self.add_horizontal_line_requested.emit()
 
     def _on_add_v_line_clicked(self) -> None:
         self.add_vertical_line_requested.emit()
+
+    def _on_delete_clicked(self) -> None:
+        self.delete_line_requested.emit()
 
     def _on_delete_line_clicked(self) -> None:
         self.delete_line_requested.emit()
@@ -552,10 +868,13 @@ class MainWindow(QMainWindow):
 
     def set_delete_button_enabled(self, enabled: bool) -> None:
         self.delete_line_btn.setEnabled(enabled)
+        self.delete_button.setEnabled(enabled)
 
     def set_fill_buttons_enabled(self, has_h_line: bool, has_v_line: bool) -> None:
         self.fill_h_btn.setEnabled(has_h_line)
+        self.fill_h_btn2.setEnabled(has_h_line)
         self.fill_v_btn.setEnabled(has_v_line)
+        self.fill_v_btn2.setEnabled(has_v_line)
 
     def set_cropping_mode(self, is_cropping: bool) -> None:
         self.canvas.set_cropping_mode(is_cropping)
@@ -564,6 +883,9 @@ class MainWindow(QMainWindow):
             self.crop_button.setStyleSheet(f"background-color: {theme['accent']};")
         else:
             self.crop_button.setStyleSheet("")
+
+    def set_selection_count(self, count: int) -> None:
+        self.selection_count_label.setText(f"当前选中：{count} 条线")
 
     def get_spacing(self) -> int:
         return self.spacing_spinbox.value()
@@ -589,22 +911,32 @@ class MainWindow(QMainWindow):
     def display_image(self, pixmap: QPixmap) -> None:
         self._current_pixmap = pixmap
         self.canvas.set_pixmap(pixmap)
+        self.canvas.fit_to_screen()
 
     def set_canvas_grid_lines(self, lines: list) -> None:
         self.canvas.set_grid_lines(lines)
+
+    def set_canvas_selected_line_ids(self, ids: list[int]) -> None:
+        self.canvas.set_selected_line_ids(ids)
 
     def set_canvas_adding_mode(self, orientation: str | None) -> None:
         self.canvas.set_adding_mode(orientation)
         theme = THEMES[self._current_theme]
         if orientation == 'horizontal':
             self.add_h_line_btn.setStyleSheet(f"background-color: {theme['accent']};")
+            self.add_h_line_btn2.setStyleSheet(f"background-color: {theme['accent']};")
             self.add_v_line_btn.setStyleSheet("")
+            self.add_v_line_btn2.setStyleSheet("")
         elif orientation == 'vertical':
             self.add_v_line_btn.setStyleSheet(f"background-color: {theme['accent']};")
+            self.add_v_line_btn2.setStyleSheet(f"background-color: {theme['accent']};")
             self.add_h_line_btn.setStyleSheet("")
+            self.add_h_line_btn2.setStyleSheet("")
         else:
             self.add_h_line_btn.setStyleSheet("")
+            self.add_h_line_btn2.setStyleSheet("")
             self.add_v_line_btn.setStyleSheet("")
+            self.add_v_line_btn2.setStyleSheet("")
 
     def refresh_canvas(self) -> None:
         self.canvas.update()

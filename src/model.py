@@ -12,6 +12,8 @@ class GridLine:
     color: QColor = field(default_factory=lambda: QColor(255, 0, 0))
     start: int = 0
     end: Optional[int] = None
+    thickness: int = 2
+    style: str = 'solid'  # 'solid', 'dashed', 'dotted'
 
     _id_counter: int = 0
 
@@ -27,7 +29,9 @@ class GridLine:
             position=self.position,
             color=QColor(self.color),
             start=self.start,
-            end=self.end
+            end=self.end,
+            thickness=self.thickness,
+            style=self.style
         )
 
 
@@ -41,6 +45,9 @@ class ImageModel:
         self._history_index: int = -1
         self._max_history: int = 50
         self._selected_line_ids: List[int] = []
+        self._default_thickness: int = 2
+        self._default_color: QColor = QColor(255, 0, 0)
+        self._default_style: str = 'solid'
 
     @property
     def pil_image(self) -> Image.Image | None:
@@ -123,14 +130,70 @@ class ImageModel:
     def _restore_state(self, state: list[GridLine]) -> None:
         self._grid_lines = [line.copy() for line in state]
 
-    def add_grid_line(self, orientation: str, position: int, color: QColor | None = None, start: int = 0, end: Optional[int] = None) -> GridLine:
+    def add_grid_line(self, orientation: str, position: int, color: QColor | None = None, start: int = 0, end: Optional[int] = None, thickness: int | None = None, style: str | None = None) -> GridLine:
         self._save_state()
-        if color is None:
-            line = GridLine(orientation=orientation, position=position, start=start, end=end)
-        else:
-            line = GridLine(orientation=orientation, position=position, color=color, start=start, end=end)
+        line = GridLine(
+            orientation=orientation,
+            position=position,
+            color=color if color is not None else self._default_color,
+            start=start,
+            end=end,
+            thickness=thickness if thickness is not None else self._default_thickness,
+            style=style if style is not None else self._default_style
+        )
         self._grid_lines.append(line)
         return line
+
+    @property
+    def default_thickness(self) -> int:
+        return self._default_thickness
+
+    @default_thickness.setter
+    def default_thickness(self, value: int) -> None:
+        self._default_thickness = max(1, min(10, value))
+
+    @property
+    def default_color(self) -> QColor:
+        return self._default_color
+
+    @default_color.setter
+    def default_color(self, value: QColor) -> None:
+        self._default_color = value
+
+    @property
+    def default_style(self) -> str:
+        return self._default_style
+
+    @default_style.setter
+    def default_style(self, value: str) -> None:
+        self._default_style = value
+
+    def update_selected_lines_thickness(self, thickness: int) -> None:
+        if not self._selected_line_ids:
+            return
+        self._save_state()
+        for line_id in self._selected_line_ids:
+            line = self.get_grid_line(line_id)
+            if line:
+                line.thickness = max(1, min(10, thickness))
+
+    def update_selected_lines_color(self, color: QColor) -> None:
+        if not self._selected_line_ids:
+            return
+        self._save_state()
+        for line_id in self._selected_line_ids:
+            line = self.get_grid_line(line_id)
+            if line:
+                line.color = color
+
+    def update_selected_lines_style(self, style: str) -> None:
+        if not self._selected_line_ids:
+            return
+        self._save_state()
+        for line_id in self._selected_line_ids:
+            line = self.get_grid_line(line_id)
+            if line:
+                line.style = style
 
     def remove_grid_line(self, line_id: int) -> bool:
         line = self.get_grid_line(line_id)
@@ -174,26 +237,54 @@ class ImageModel:
                 line_start = line.start
                 line_end = line.end if line.end is not None else (self._pil_image.width if self._pil_image else 0)
                 
-                overlap_start = max(line_start, min_x)
-                overlap_end = min(line_end, max_x)
-                
-                if overlap_start < overlap_end:
-                    new_line = line.copy()
-                    new_line.start = overlap_start
-                    new_line.end = overlap_end
-                    new_lines.append(new_line)
+                # 如果线的 y 坐标不在裁剪框内，保留整条线
+                if line.position < min_y or line.position > max_y:
+                    new_lines.append(line.copy())
+                else:
+                    # 线的 y 坐标在裁剪框内，检查是否与裁剪框的 x 范围相交
+                    # 如果不相交，保留整条线
+                    if line_end <= min_x or line_start >= max_x:
+                        new_lines.append(line.copy())
+                    else:
+                        # 相交，分成两段
+                        # 左边部分（裁剪框左侧）
+                        if line_start < min_x:
+                            new_line_left = line.copy()
+                            new_line_left.start = line_start
+                            new_line_left.end = min_x
+                            new_lines.append(new_line_left)
+                        # 右边部分（裁剪框右侧）
+                        if line_end > max_x:
+                            new_line_right = line.copy()
+                            new_line_right.start = max_x
+                            new_line_right.end = line_end
+                            new_lines.append(new_line_right)
             else:
                 line_start = line.start
                 line_end = line.end if line.end is not None else (self._pil_image.height if self._pil_image else 0)
                 
-                overlap_start = max(line_start, min_y)
-                overlap_end = min(line_end, max_y)
-                
-                if overlap_start < overlap_end:
-                    new_line = line.copy()
-                    new_line.start = overlap_start
-                    new_line.end = overlap_end
-                    new_lines.append(new_line)
+                # 如果线的 x 坐标不在裁剪框内，保留整条线
+                if line.position < min_x or line.position > max_x:
+                    new_lines.append(line.copy())
+                else:
+                    # 线的 x 坐标在裁剪框内，检查是否与裁剪框的 y 范围相交
+                    # 如果不相交，保留整条线
+                    if line_end <= min_y or line_start >= max_y:
+                        new_lines.append(line.copy())
+                    else:
+                        # 相交，分成两段
+                        # 上边部分（裁剪框上侧）
+                        if line_start < min_y:
+                            new_line_top = line.copy()
+                            new_line_top.start = line_start
+                            new_line_top.end = min_y
+                            new_lines.append(new_line_top)
+                        # 下边部分（裁剪框下侧）
+                        if line_end > max_y:
+                            new_line_bottom = line.copy()
+                            new_line_bottom.start = max_y
+                            new_line_bottom.end = line_end
+                            new_lines.append(new_line_bottom)
         
         self._grid_lines = new_lines
 

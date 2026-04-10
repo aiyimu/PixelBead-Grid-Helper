@@ -1,5 +1,6 @@
 from model import ImageModel, GridLine
 from view import MainWindow
+from PyQt6.QtGui import QColor
 
 
 class Controller:
@@ -9,6 +10,8 @@ class Controller:
         self._adding_orientation: str | None = None
         self._is_dragging: bool = False
         self._is_cropping: bool = False
+        self._is_calculating_distance: bool = False
+        self._distance_first_line_id: int | None = None
         self._connect_signals()
 
     def _connect_signals(self) -> None:
@@ -34,6 +37,11 @@ class Controller:
         self._view.canvas.deselect_all_requested.connect(self._on_deselect_all)
         self._view.select_tool_requested.connect(self._on_select_tool)
         self._view.rect_select_tool_requested.connect(self._on_rect_select_tool)
+        self._view.thickness_changed.connect(self._on_thickness_changed)
+        self._view.color_changed.connect(self._on_color_changed)
+        self._view.style_changed.connect(self._on_style_changed)
+        self._view.calculate_distance_requested.connect(self._on_calculate_distance)
+        self._view.canvas.calculate_distance_line_selected.connect(self._on_calculate_distance_line_selected)
 
     def _on_open_image(self) -> None:
         file_path = self._view.show_file_dialog()
@@ -138,7 +146,32 @@ class Controller:
                     has_h = True
                 else:
                     has_v = True
+                self._view.set_thickness_value(line.thickness)
+                self._view.set_color_preview(line.color)
+                style_map = {"solid": 0, "dashed": 1, "dotted": 2}
+                self._view.set_style_value(style_map.get(line.style, 0))
         self._view.set_fill_buttons_enabled(has_h, has_v)
+
+    def _on_thickness_changed(self, thickness: int) -> None:
+        if self._model.selected_line_ids:
+            self._model.update_selected_lines_thickness(thickness)
+            self._view.set_canvas_grid_lines(self._model.grid_lines)
+        else:
+            self._model.default_thickness = thickness
+
+    def _on_color_changed(self, color: QColor) -> None:
+        if self._model.selected_line_ids:
+            self._model.update_selected_lines_color(color)
+            self._view.set_canvas_grid_lines(self._model.grid_lines)
+        else:
+            self._model.default_color = color
+
+    def _on_style_changed(self, style: str) -> None:
+        if self._model.selected_line_ids:
+            self._model.update_selected_lines_style(style)
+            self._view.set_canvas_grid_lines(self._model.grid_lines)
+        else:
+            self._model.default_style = style
 
     def _on_select_tool(self) -> None:
         self._view._update_tool_buttons("select")
@@ -198,7 +231,6 @@ class Controller:
 
         spacing = self._view.get_spacing()
         base_pos = line.position
-        line_color = line.color
         img_height = self._model.pil_image.height
 
         existing_positions = set()
@@ -210,14 +242,26 @@ class Controller:
         pos = base_pos - spacing
         while pos >= 0:
             if pos not in existing_positions:
-                new_line = GridLine(orientation='horizontal', position=pos, color=line_color)
+                new_line = GridLine(
+                    orientation='horizontal',
+                    position=pos,
+                    color=line.color,
+                    thickness=line.thickness,
+                    style=line.style
+                )
                 new_lines.append(new_line)
             pos -= spacing
 
         pos = base_pos + spacing
         while pos <= img_height:
             if pos not in existing_positions:
-                new_line = GridLine(orientation='horizontal', position=pos, color=line_color)
+                new_line = GridLine(
+                    orientation='horizontal',
+                    position=pos,
+                    color=line.color,
+                    thickness=line.thickness,
+                    style=line.style
+                )
                 new_lines.append(new_line)
             pos += spacing
 
@@ -236,7 +280,6 @@ class Controller:
 
         spacing = self._view.get_spacing()
         base_pos = line.position
-        line_color = line.color
         img_width = self._model.pil_image.width
 
         existing_positions = set()
@@ -248,17 +291,59 @@ class Controller:
         pos = base_pos - spacing
         while pos >= 0:
             if pos not in existing_positions:
-                new_line = GridLine(orientation='vertical', position=pos, color=line_color)
+                new_line = GridLine(
+                    orientation='vertical',
+                    position=pos,
+                    color=line.color,
+                    thickness=line.thickness,
+                    style=line.style
+                )
                 new_lines.append(new_line)
             pos -= spacing
 
         pos = base_pos + spacing
         while pos <= img_width:
             if pos not in existing_positions:
-                new_line = GridLine(orientation='vertical', position=pos, color=line_color)
+                new_line = GridLine(
+                    orientation='vertical',
+                    position=pos,
+                    color=line.color,
+                    thickness=line.thickness,
+                    style=line.style
+                )
                 new_lines.append(new_line)
             pos += spacing
 
         if new_lines:
             self._model.batch_add_lines(new_lines)
             self._view.set_canvas_grid_lines(self._model.grid_lines)
+
+    def _on_calculate_distance(self) -> None:
+        if self._model.pil_image is None:
+            return
+        self._is_calculating_distance = True
+        self._distance_first_line_id = None
+        self._view.set_calculating_distance_mode(True)
+
+    def _on_calculate_distance_line_selected(self, line_id: int) -> None:
+        if not self._is_calculating_distance:
+            return
+        
+        line = self._model.get_grid_line(line_id)
+        if not line:
+            return
+        
+        if self._distance_first_line_id is None:
+            # 第一条线选中
+            self._distance_first_line_id = line_id
+        else:
+            # 第二条线选中，计算距离
+            first_line = self._model.get_grid_line(self._distance_first_line_id)
+            if first_line and first_line.orientation == line.orientation:
+                # 两条线平行，计算距离
+                distance = abs(line.position - first_line.position)
+                self._view.show_distance_dialog(distance, first_line.position, line.position)
+            # 重置状态
+            self._is_calculating_distance = False
+            self._distance_first_line_id = None
+            self._view.set_calculating_distance_mode(False)

@@ -1,6 +1,8 @@
+import os
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QToolBar, QPushButton, QLabel, QFrame, QScrollArea, QFileDialog, QComboBox, QSpinBox, QDialog, QTextEdit
+    QToolBar, QPushButton, QLabel, QFrame, QScrollArea, QFileDialog, QComboBox, QSpinBox, QDialog, QTextEdit, QSlider, QColorDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QRect, QSize
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QCursor, QShortcut, QKeySequence, QColor, QBrush, QWheelEvent, QMouseEvent
@@ -89,6 +91,38 @@ class HelpDialog(QDialog):
         layout.addWidget(help_text)
 
 
+class DistanceDialog(QDialog):
+    def __init__(self, parent, distance: int, line1_pos: int, line2_pos: int):
+        super().__init__(parent)
+        self.setWindowTitle("两条线之间的距离")
+        self.setMinimumWidth(300)
+        
+        layout = QVBoxLayout(self)
+        
+        content = QLabel(f"""
+        <h2>距离计算结果</h2>
+        <p><b>第一条线位置：</b> {line1_pos}</p>
+        <p><b>第二条线位置：</b> {line2_pos}</p>
+        <p style="font-size: 24px; font-weight: bold; color: #0078d4;">
+            距离：{distance} px
+        </p>
+        """)
+        content.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        content.setWordWrap(True)
+        layout.addWidget(content)
+        
+        layout.addSpacing(20)
+        
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        ok_button = QPushButton("确定")
+        ok_button.clicked.connect(self.accept)
+        button_layout.addWidget(ok_button)
+        
+        layout.addLayout(button_layout)
+
+
 class CanvasWidget(QWidget):
     canvas_clicked = pyqtSignal(int, int)
     line_dragged = pyqtSignal(int, int)
@@ -102,6 +136,7 @@ class CanvasWidget(QWidget):
     delete_selected_requested = pyqtSignal()
     select_all_requested = pyqtSignal()
     deselect_all_requested = pyqtSignal()
+    calculate_distance_line_selected = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -134,6 +169,9 @@ class CanvasWidget(QWidget):
         self._is_rect_selecting: bool = False
         self._rect_select_start_pos: QPoint = QPoint(0, 0)
         self._rect_select_end_pos: QPoint = QPoint(0, 0)
+
+        self._is_calculating_distance: bool = False
+        self._distance_first_line: int | None = None
 
         self._tool_mode: str = "select"
 
@@ -249,6 +287,15 @@ class CanvasWidget(QWidget):
             self._tool_mode = "select"
         self._update_cursor()
 
+    def set_calculating_distance_mode(self, is_calculating: bool) -> None:
+        self._is_calculating_distance = is_calculating
+        self._distance_first_line = None
+        if is_calculating:
+            self._tool_mode = "calculate_distance"
+        else:
+            self._tool_mode = "select"
+        self._update_cursor()
+
     def set_tool_mode(self, mode: str) -> None:
         self._tool_mode = mode
         self._update_cursor()
@@ -263,6 +310,8 @@ class CanvasWidget(QWidget):
         elif self._tool_mode == "crop":
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif self._tool_mode == "rect_select":
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        elif self._tool_mode == "calculate_distance":
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
             line_id = self._get_line_at(self.mapFromGlobal(self.cursor().pos()))
@@ -298,10 +347,30 @@ class CanvasWidget(QWidget):
 
             for line in self._grid_lines:
                 is_selected = line.id in self._selected_line_ids
+                
+                # 设置线的颜色
                 if is_selected:
-                    pen = QPen(QColor(255, 0, 0), max(2, int(3 * self._scale_factor)))
+                    pen_color = QColor(255, 0, 0)
                 else:
-                    pen = QPen(line.color, max(1, int(2 * self._scale_factor)))
+                    pen_color = line.color
+                
+                # 设置线的粗细
+                thickness = getattr(line, 'thickness', 2)
+                if is_selected:
+                    pen_width = max(2, int((thickness + 1) * self._scale_factor))
+                else:
+                    pen_width = max(1, int(thickness * self._scale_factor))
+                
+                # 设置线的样式
+                style = getattr(line, 'style', 'solid')
+                if style == 'dashed':
+                    pen_style = Qt.PenStyle.DashLine
+                elif style == 'dotted':
+                    pen_style = Qt.PenStyle.DotLine
+                else:
+                    pen_style = Qt.PenStyle.SolidLine
+                
+                pen = QPen(pen_color, pen_width, pen_style)
                 painter.setPen(pen)
 
                 if line.orientation == 'horizontal':
@@ -379,6 +448,14 @@ class CanvasWidget(QWidget):
                         self.canvas_clicked.emit(img_x, img_y)
                     else:
                         self.canvas_clicked.emit(img_x, img_y)
+            elif self._tool_mode == "calculate_distance" and self._pixmap:
+                line_id = self._get_line_at(event.pos())
+                if line_id is not None:
+                    if self._distance_first_line is None:
+                        self._distance_first_line = line_id
+                        self.calculate_distance_line_selected.emit(line_id)
+                    else:
+                        self.calculate_distance_line_selected.emit(line_id)
             elif self._tool_mode == "select" and self._pixmap:
                 line_id = self._get_line_at(event.pos())
                 if line_id is not None:
@@ -464,6 +541,8 @@ class CanvasWidget(QWidget):
                 self._rect_select_start_pos = QPoint(0, 0)
                 self._rect_select_end_pos = QPoint(0, 0)
                 self.update()
+            elif self._is_calculating_distance:
+                self.set_calculating_distance_mode(False)
             else:
                 self.all_deselected.emit()
         elif event.key() == Qt.Key.Key_Space and not self._is_space_pressed:
@@ -547,7 +626,19 @@ class CanvasWidget(QWidget):
         painter.drawPixmap(0, 0, self._pixmap)
         
         for line in self._grid_lines:
-            pen = QPen(line.color, 2)
+            # 设置线的粗细
+            thickness = getattr(line, 'thickness', 2)
+            
+            # 设置线的样式
+            style = getattr(line, 'style', 'solid')
+            if style == 'dashed':
+                pen_style = Qt.PenStyle.DashLine
+            elif style == 'dotted':
+                pen_style = Qt.PenStyle.DotLine
+            else:
+                pen_style = Qt.PenStyle.SolidLine
+            
+            pen = QPen(line.color, thickness, pen_style)
             painter.setPen(pen)
             
             if line.orientation == 'horizontal':
@@ -578,6 +669,10 @@ class MainWindow(QMainWindow):
     export_requested = pyqtSignal()
     select_tool_requested = pyqtSignal()
     rect_select_tool_requested = pyqtSignal()
+    thickness_changed = pyqtSignal(int)
+    color_changed = pyqtSignal(QColor)
+    style_changed = pyqtSignal(str)
+    calculate_distance_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -649,6 +744,9 @@ class MainWindow(QMainWindow):
         self.crop_button = QPushButton("裁剪")
         self.crop_button.clicked.connect(self._on_crop_clicked)
         toolbar.addWidget(self.crop_button)
+        self.calculate_distance_button = QPushButton("计算距离")
+        self.calculate_distance_button.clicked.connect(self._on_calculate_distance_clicked)
+        toolbar.addWidget(self.calculate_distance_button)
 
         toolbar.addSeparator()
 
@@ -722,6 +820,50 @@ class MainWindow(QMainWindow):
         self.fill_v_btn2.setEnabled(False)
         toolbox_layout.addWidget(self.fill_v_btn2)
 
+        toolbox_layout.addSpacing(10)
+
+        # 线条属性分组
+        line_properties_label = QLabel("线条属性")
+        line_properties_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        toolbox_layout.addWidget(line_properties_label)
+
+        # 粗细滑块
+        thickness_layout = QHBoxLayout()
+        thickness_label = QLabel("粗细:")
+        self.thickness_slider = QSlider(Qt.Orientation.Horizontal)
+        self.thickness_slider.setMinimum(1)
+        self.thickness_slider.setMaximum(10)
+        self.thickness_slider.setValue(2)
+        self.thickness_value_label = QLabel("2")
+        self.thickness_value_label.setMinimumWidth(20)
+        self.thickness_slider.valueChanged.connect(self._on_thickness_changed)
+        thickness_layout.addWidget(thickness_label)
+        thickness_layout.addWidget(self.thickness_slider)
+        thickness_layout.addWidget(self.thickness_value_label)
+        toolbox_layout.addLayout(thickness_layout)
+
+        # 颜色选择器
+        color_layout = QHBoxLayout()
+        color_label = QLabel("颜色:")
+        self.color_button = QPushButton()
+        self.color_button.setFixedSize(40, 30)
+        self._update_color_preview(QColor(255, 0, 0))
+        self.color_button.clicked.connect(self._on_color_button_clicked)
+        color_layout.addWidget(color_label)
+        color_layout.addWidget(self.color_button)
+        color_layout.addStretch()
+        toolbox_layout.addLayout(color_layout)
+
+        # 样式下拉框
+        style_layout = QHBoxLayout()
+        style_label = QLabel("样式:")
+        self.style_combo = QComboBox()
+        self.style_combo.addItems(["实线", "虚线", "点线"])
+        self.style_combo.currentIndexChanged.connect(self._on_style_changed)
+        style_layout.addWidget(style_label)
+        style_layout.addWidget(self.style_combo)
+        toolbox_layout.addLayout(style_layout)
+
         toolbox_layout.addStretch()
 
         self.selection_count_label = QLabel("当前选中：0 条线")
@@ -794,10 +936,44 @@ class MainWindow(QMainWindow):
     def _on_fill_v_clicked(self) -> None:
         self.fill_vertical_lines_requested.emit()
 
+    def _on_thickness_changed(self, value: int) -> None:
+        self.thickness_value_label.setText(str(value))
+        self.thickness_changed.emit(value)
+
+    def _on_color_button_clicked(self) -> None:
+        current_color = QColor(255, 0, 0)
+        color = QColorDialog.getColor(current_color, self, "选择线条颜色")
+        if color.isValid():
+            self._update_color_preview(color)
+            self.color_changed.emit(color)
+
+    def _update_color_preview(self, color: QColor) -> None:
+        self.color_button.setStyleSheet(f"background-color: {color.name()}; border: 1px solid #888;")
+
+    def _on_style_changed(self, index: int) -> None:
+        style_map = {0: "solid", 1: "dashed", 2: "dotted"}
+        style = style_map.get(index, "solid")
+        self.style_changed.emit(style)
+
     def _on_theme_changed(self, theme_name: str) -> None:
         self._current_theme = theme_name
         self.theme_changed.emit(theme_name)
         self._apply_theme()
+
+    def _on_calculate_distance_clicked(self) -> None:
+        self.calculate_distance_requested.emit()
+
+    def set_calculating_distance_mode(self, is_calculating: bool) -> None:
+        self.canvas.set_calculating_distance_mode(is_calculating)
+        theme = THEMES[self._current_theme]
+        if is_calculating:
+            self.calculate_distance_button.setStyleSheet(f"background-color: {theme['accent']};")
+        else:
+            self.calculate_distance_button.setStyleSheet("")
+
+    def show_distance_dialog(self, distance: int, line1_pos: int, line2_pos: int) -> None:
+        dialog = DistanceDialog(self, distance, line1_pos, line2_pos)
+        dialog.exec()
 
     def _on_help_clicked(self) -> None:
         dialog = HelpDialog(self)
@@ -890,6 +1066,20 @@ class MainWindow(QMainWindow):
     def get_spacing(self) -> int:
         return self.spacing_spinbox.value()
 
+    def set_thickness_value(self, thickness: int) -> None:
+        self.thickness_slider.blockSignals(True)
+        self.thickness_slider.setValue(thickness)
+        self.thickness_value_label.setText(str(thickness))
+        self.thickness_slider.blockSignals(False)
+
+    def set_color_preview(self, color: QColor) -> None:
+        self._update_color_preview(color)
+
+    def set_style_value(self, index: int) -> None:
+        self.style_combo.blockSignals(True)
+        self.style_combo.setCurrentIndex(index)
+        self.style_combo.blockSignals(False)
+
     def show_file_dialog(self) -> str | None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -900,10 +1090,20 @@ class MainWindow(QMainWindow):
         return file_path if file_path else None
 
     def show_export_dialog(self) -> str | None:
+        # 获取项目根目录
+        project_root = Path(__file__).parent.parent
+        output_dir = project_root / "output"
+        
+        # 确保 output 文件夹存在
+        output_dir.mkdir(exist_ok=True)
+        
+        # 默认保存位置为 output 文件夹
+        default_path = str(output_dir / "exported_image.png")
+        
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "导出图片",
-            "",
+            default_path,
             "PNG 图片 (*.png);;JPG 图片 (*.jpg *.jpeg)"
         )
         return file_path if file_path else None

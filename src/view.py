@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QRect, QSize
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QCursor, QShortcut, QKeySequence, QColor, QBrush, QWheelEvent, QMouseEvent
+from locales import TRANSLATIONS, LANGUAGES, THEME_NAMES
 
 
 THEMES = {
@@ -48,14 +49,36 @@ THEMES = {
         "button": "#ffc1a5",
         "button_hover": "#ffb394",
         "accent": "#ff6347"
+    },
+    "护眼浅绿色": {
+        "window": "#e8f5e9",
+        "panel": "#c8e6c9",
+        "canvas": "#a5d6a7",
+        "text": "#2e7d32",
+        "border": "#81c784",
+        "button": "#a5d6a7",
+        "button_hover": "#81c784",
+        "accent": "#43a047"
+    },
+    "护眼暗蓝色": {
+        "window": "#1a237e",
+        "panel": "#283593",
+        "canvas": "#3949ab",
+        "text": "#bbdefb",
+        "border": "#5c6bc0",
+        "button": "#3949ab",
+        "button_hover": "#5c6bc0",
+        "accent": "#7986cb"
     }
 }
 
 
 class HelpDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, language: str = "zh_CN"):
         super().__init__(parent)
-        self.setWindowTitle("快捷键帮助")
+        self._language = language
+        t = TRANSLATIONS[language]
+        self.setWindowTitle(t["help_title"])
         self.setMinimumSize(400, 350)
         self._setup_ui()
 
@@ -63,48 +86,27 @@ class HelpDialog(QDialog):
         layout = QVBoxLayout(self)
         help_text = QTextEdit()
         help_text.setReadOnly(True)
-        help_text.setHtml("""
-            <h3>快捷键列表</h3>
-            <ul>
-                <li><b>Ctrl + Z</b> - 撤销操作</li>
-                <li><b>Ctrl + Y</b> - 重做操作</li>
-                <li><b>Ctrl + A</b> - 全选</li>
-                <li><b>Ctrl + Shift + A</b> - 取消全选</li>
-                <li><b>Delete</b> - 删除选中的线</li>
-                <li><b>Esc</b> - 取消裁剪模式/取消选择</li>
-                <li><b>Space</b> - 按住平移画布</li>
-                <li><b>Mouse Wheel</b> - 缩放</li>
-                <li><b>Middle Mouse</b> - 平移画布</li>
-            </ul>
-            <h3>操作说明</h3>
-            <ul>
-                <li>点击"添加横线"/"添加纵线"，然后在图片上点击添加线</li>
-                <li>点击线选中，Shift+点击多选</li>
-                <li>选中线后，可以拖动改变位置</li>
-                <li>选中线后，点击"补全横线"/"补全纵线"自动补全</li>
-                <li>点击"裁剪"按钮，拖动鼠标画选框，确认裁剪后截断相交的线</li>
-                <li>点击"导出"按钮，保存图片+网格线为图片文件</li>
-                <li>可以通过"主题"下拉框切换界面风格</li>
-                <li>鼠标滚轮缩放，按住空格键或中键拖拽平移画布</li>
-            </ul>
-        """)
+        t = TRANSLATIONS[self._language]
+        help_text.setHtml(t["help_content"])
         layout.addWidget(help_text)
 
 
 class DistanceDialog(QDialog):
-    def __init__(self, parent, distance: int, line1_pos: int, line2_pos: int):
+    def __init__(self, parent, distance: int, line1_pos: int, line2_pos: int, language: str = "zh_CN"):
         super().__init__(parent)
-        self.setWindowTitle("两条线之间的距离")
+        self._language = language
+        t = TRANSLATIONS[language]
+        self.setWindowTitle(t["distance_dialog_title"])
         self.setMinimumWidth(300)
         
         layout = QVBoxLayout(self)
         
         content = QLabel(f"""
-        <h2>距离计算结果</h2>
-        <p><b>第一条线位置：</b> {line1_pos}</p>
-        <p><b>第二条线位置：</b> {line2_pos}</p>
+        <h2>{t["distance_result"]}</h2>
+        <p><b>{t["first_line_pos"]}</b> {line1_pos}</p>
+        <p><b>{t["second_line_pos"]}</b> {line2_pos}</p>
         <p style="font-size: 24px; font-weight: bold; color: #0078d4;">
-            距离：{distance} px
+            {t["distance"]}{distance} {t["px"]}
         </p>
         """)
         content.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -116,7 +118,7 @@ class DistanceDialog(QDialog):
         button_layout = QHBoxLayout()
         button_layout.addStretch()
         
-        ok_button = QPushButton("确定")
+        ok_button = QPushButton(t["ok"])
         ok_button.clicked.connect(self.accept)
         button_layout.addWidget(ok_button)
         
@@ -673,94 +675,115 @@ class MainWindow(QMainWindow):
     color_changed = pyqtSignal(QColor)
     style_changed = pyqtSignal(str)
     calculate_distance_requested = pyqtSignal()
+    language_changed = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PixelBead Grid Helper")
         self.setGeometry(100, 100, 1400, 900)
         self._current_pixmap: QPixmap | None = None
-        self._current_theme = "暗色标准"
+        self._current_theme = "亮色标准"
+        self._current_language = "zh_CN"
         self._setup_ui()
         self._setup_shortcuts()
         self._apply_theme()
+        self._update_ui_texts()
 
     def _setup_ui(self) -> None:
         toolbar = QToolBar()
         self.addToolBar(toolbar)
 
-        self.open_button = QPushButton("打开")
+        self.open_button = QPushButton("")
         self.open_button.clicked.connect(self._on_open_clicked)
         toolbar.addWidget(self.open_button)
-        toolbar.addWidget(QPushButton("保存"))
-        self.export_button = QPushButton("导出")
+        self.save_button = QPushButton("")
+        toolbar.addWidget(self.save_button)
+        self.export_button = QPushButton("")
         self.export_button.clicked.connect(self._on_export_clicked)
         toolbar.addWidget(self.export_button)
 
         toolbar.addSeparator()
 
-        toolbar.addWidget(QPushButton("撤销"))
-        toolbar.addWidget(QPushButton("重做"))
-        self.delete_button = QPushButton("删除")
+        self.undo_button = QPushButton("")
+        self.undo_button.clicked.connect(self.undo_requested.emit)
+        toolbar.addWidget(self.undo_button)
+        self.redo_button = QPushButton("")
+        self.redo_button.clicked.connect(self.redo_requested.emit)
+        toolbar.addWidget(self.redo_button)
+        self.delete_button = QPushButton("")
         self.delete_button.clicked.connect(self._on_delete_clicked)
         toolbar.addWidget(self.delete_button)
 
         toolbar.addSeparator()
 
-        self.zoom_in_button = QPushButton("放大")
+        self.zoom_in_button = QPushButton("")
         self.zoom_in_button.clicked.connect(self._on_zoom_in_clicked)
         toolbar.addWidget(self.zoom_in_button)
-        self.zoom_out_button = QPushButton("缩小")
+        self.zoom_out_button = QPushButton("")
         self.zoom_out_button.clicked.connect(self._on_zoom_out_clicked)
         toolbar.addWidget(self.zoom_out_button)
-        self.zoom_100_button = QPushButton("100%")
+        self.zoom_100_button = QPushButton("")
         self.zoom_100_button.clicked.connect(self._on_zoom_100_clicked)
         toolbar.addWidget(self.zoom_100_button)
-        self.zoom_fit_button = QPushButton("适应屏幕")
-        self.zoom_fit_button.clicked.connect(self._on_zoom_fit_clicked)
-        toolbar.addWidget(self.zoom_fit_button)
+        self.fit_screen_button = QPushButton("")
+        self.fit_screen_button.clicked.connect(self._on_zoom_fit_clicked)
+        toolbar.addWidget(self.fit_screen_button)
 
         toolbar.addSeparator()
 
-        self.select_button = QPushButton("选择")
+        self.select_button = QPushButton("")
         self.select_button.clicked.connect(self._on_select_tool_clicked)
         toolbar.addWidget(self.select_button)
-        self.rect_select_button = QPushButton("框选")
+        self.rect_select_button = QPushButton("")
         self.rect_select_button.clicked.connect(self._on_rect_select_tool_clicked)
         toolbar.addWidget(self.rect_select_button)
-        self.add_h_line_btn = QPushButton("添加横线")
-        self.add_h_line_btn.clicked.connect(self._on_add_h_line_clicked)
-        toolbar.addWidget(self.add_h_line_btn)
-        self.add_v_line_btn = QPushButton("添加纵线")
-        self.add_v_line_btn.clicked.connect(self._on_add_v_line_clicked)
-        toolbar.addWidget(self.add_v_line_btn)
-        self.fill_h_btn = QPushButton("补全横线")
-        self.fill_h_btn.clicked.connect(self._on_fill_h_clicked)
-        self.fill_h_btn.setEnabled(False)
-        toolbar.addWidget(self.fill_h_btn)
-        self.fill_v_btn = QPushButton("补全纵线")
-        self.fill_v_btn.clicked.connect(self._on_fill_v_clicked)
-        self.fill_v_btn.setEnabled(False)
-        toolbar.addWidget(self.fill_v_btn)
-        self.crop_button = QPushButton("裁剪")
+        self.add_h_line_button = QPushButton("")
+        self.add_h_line_button.clicked.connect(self._on_add_h_line_clicked)
+        toolbar.addWidget(self.add_h_line_button)
+        self.add_v_line_button = QPushButton("")
+        self.add_v_line_button.clicked.connect(self._on_add_v_line_clicked)
+        toolbar.addWidget(self.add_v_line_button)
+        self.fill_h_button = QPushButton("")
+        self.fill_h_button.clicked.connect(self._on_fill_h_clicked)
+        self.fill_h_button.setEnabled(False)
+        toolbar.addWidget(self.fill_h_button)
+        self.fill_v_button = QPushButton("")
+        self.fill_v_button.clicked.connect(self._on_fill_v_clicked)
+        self.fill_v_button.setEnabled(False)
+        toolbar.addWidget(self.fill_v_button)
+        self.crop_button = QPushButton("")
         self.crop_button.clicked.connect(self._on_crop_clicked)
         toolbar.addWidget(self.crop_button)
-        self.calculate_distance_button = QPushButton("计算距离")
+        self.calculate_distance_button = QPushButton("")
         self.calculate_distance_button.clicked.connect(self._on_calculate_distance_clicked)
         toolbar.addWidget(self.calculate_distance_button)
 
         toolbar.addSeparator()
 
-        theme_label = QLabel("主题: ")
-        toolbar.addWidget(theme_label)
+        # 语言切换
+        self.lang_label = QLabel("")
+        toolbar.addWidget(self.lang_label)
+        self.language_combo = QComboBox()
+        self.language_combo.addItems(LANGUAGES.values())
+        self.language_combo.setCurrentText(LANGUAGES[self._current_language])
+        self.language_combo.currentTextChanged.connect(self._on_language_changed)
+        toolbar.addWidget(self.language_combo)
+
+        toolbar.addSeparator()
+
+        self.theme_label = QLabel("")
+        toolbar.addWidget(self.theme_label)
         self.theme_combo = QComboBox()
-        self.theme_combo.addItems(THEMES.keys())
-        self.theme_combo.setCurrentText(self._current_theme)
+        # Initialize with current language theme names
+        theme_names = THEME_NAMES[self._current_language]
+        self.theme_combo.addItems([theme_names[key] for key in THEMES.keys()])
+        self.theme_combo.setCurrentText(theme_names[self._current_theme])
         self.theme_combo.currentTextChanged.connect(self._on_theme_changed)
         toolbar.addWidget(self.theme_combo)
 
         toolbar.addSeparator()
 
-        self.help_button = QPushButton("帮助")
+        self.help_button = QPushButton("")
         self.help_button.clicked.connect(self._on_help_clicked)
         toolbar.addWidget(self.help_button)
 
@@ -782,40 +805,40 @@ class MainWindow(QMainWindow):
         toolbox_frame.setObjectName("toolbox")
         toolbox_layout = QVBoxLayout(toolbox_frame)
 
-        toolbox_label = QLabel("工具箱")
-        toolbox_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        toolbox_layout.addWidget(toolbox_label)
+        self.toolbox_label = QLabel("")
+        self.toolbox_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        toolbox_layout.addWidget(self.toolbox_label)
 
-        self.add_h_line_btn2 = QPushButton("添加横线")
+        self.add_h_line_btn2 = QPushButton("")
         self.add_h_line_btn2.clicked.connect(self._on_add_h_line_clicked)
         toolbox_layout.addWidget(self.add_h_line_btn2)
 
-        self.add_v_line_btn2 = QPushButton("添加纵线")
+        self.add_v_line_btn2 = QPushButton("")
         self.add_v_line_btn2.clicked.connect(self._on_add_v_line_clicked)
         toolbox_layout.addWidget(self.add_v_line_btn2)
 
-        self.delete_line_btn = QPushButton("删除选中")
+        self.delete_line_btn = QPushButton("")
         self.delete_line_btn.clicked.connect(self._on_delete_line_clicked)
         self.delete_line_btn.setEnabled(False)
         toolbox_layout.addWidget(self.delete_line_btn)
 
         spacing_layout = QHBoxLayout()
-        spacing_label = QLabel("间距:")
+        self.spacing_label = QLabel("")
         self.spacing_spinbox = QSpinBox()
         self.spacing_spinbox.setMinimum(1)
         self.spacing_spinbox.setMaximum(1000)
         self.spacing_spinbox.setValue(10)
         self.spacing_spinbox.valueChanged.connect(self._on_spacing_changed)
-        spacing_layout.addWidget(spacing_label)
+        spacing_layout.addWidget(self.spacing_label)
         spacing_layout.addWidget(self.spacing_spinbox)
         toolbox_layout.addLayout(spacing_layout)
 
-        self.fill_h_btn2 = QPushButton("补全横线")
+        self.fill_h_btn2 = QPushButton("")
         self.fill_h_btn2.clicked.connect(self._on_fill_h_clicked)
         self.fill_h_btn2.setEnabled(False)
         toolbox_layout.addWidget(self.fill_h_btn2)
 
-        self.fill_v_btn2 = QPushButton("补全纵线")
+        self.fill_v_btn2 = QPushButton("")
         self.fill_v_btn2.clicked.connect(self._on_fill_v_clicked)
         self.fill_v_btn2.setEnabled(False)
         toolbox_layout.addWidget(self.fill_v_btn2)
@@ -823,13 +846,13 @@ class MainWindow(QMainWindow):
         toolbox_layout.addSpacing(10)
 
         # 线条属性分组
-        line_properties_label = QLabel("线条属性")
-        line_properties_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        toolbox_layout.addWidget(line_properties_label)
+        self.line_properties_label = QLabel("线条属性")
+        self.line_properties_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        toolbox_layout.addWidget(self.line_properties_label)
 
         # 粗细滑块
         thickness_layout = QHBoxLayout()
-        thickness_label = QLabel("粗细:")
+        self.thickness_label = QLabel("粗细:")
         self.thickness_slider = QSlider(Qt.Orientation.Horizontal)
         self.thickness_slider.setMinimum(1)
         self.thickness_slider.setMaximum(10)
@@ -837,30 +860,30 @@ class MainWindow(QMainWindow):
         self.thickness_value_label = QLabel("2")
         self.thickness_value_label.setMinimumWidth(20)
         self.thickness_slider.valueChanged.connect(self._on_thickness_changed)
-        thickness_layout.addWidget(thickness_label)
+        thickness_layout.addWidget(self.thickness_label)
         thickness_layout.addWidget(self.thickness_slider)
         thickness_layout.addWidget(self.thickness_value_label)
         toolbox_layout.addLayout(thickness_layout)
 
         # 颜色选择器
         color_layout = QHBoxLayout()
-        color_label = QLabel("颜色:")
+        self.color_label = QLabel("颜色:")
         self.color_button = QPushButton()
         self.color_button.setFixedSize(40, 30)
         self._update_color_preview(QColor(255, 0, 0))
         self.color_button.clicked.connect(self._on_color_button_clicked)
-        color_layout.addWidget(color_label)
+        color_layout.addWidget(self.color_label)
         color_layout.addWidget(self.color_button)
         color_layout.addStretch()
         toolbox_layout.addLayout(color_layout)
 
         # 样式下拉框
         style_layout = QHBoxLayout()
-        style_label = QLabel("样式:")
+        self.style_label = QLabel("样式:")
         self.style_combo = QComboBox()
         self.style_combo.addItems(["实线", "虚线", "点线"])
         self.style_combo.currentIndexChanged.connect(self._on_style_changed)
-        style_layout.addWidget(style_label)
+        style_layout.addWidget(self.style_label)
         style_layout.addWidget(self.style_combo)
         toolbox_layout.addLayout(style_layout)
 
@@ -942,7 +965,8 @@ class MainWindow(QMainWindow):
 
     def _on_color_button_clicked(self) -> None:
         current_color = QColor(255, 0, 0)
-        color = QColorDialog.getColor(current_color, self, "选择线条颜色")
+        t = TRANSLATIONS[self._current_language]
+        color = QColorDialog.getColor(current_color, self, t["color"])
         if color.isValid():
             self._update_color_preview(color)
             self.color_changed.emit(color)
@@ -955,9 +979,95 @@ class MainWindow(QMainWindow):
         style = style_map.get(index, "solid")
         self.style_changed.emit(style)
 
-    def _on_theme_changed(self, theme_name: str) -> None:
-        self._current_theme = theme_name
-        self.theme_changed.emit(theme_name)
+    def _update_ui_texts(self) -> None:
+        """Update all UI texts based on current language"""
+        t = TRANSLATIONS[self._current_language]
+        
+        # Update window title
+        self.setWindowTitle(t["app_name"])
+        
+        # Update toolbar button texts
+        self.open_button.setText(t["open"])
+        self.save_button.setText(t["save"])
+        self.export_button.setText(t["export"])
+        self.undo_button.setText(t["undo"])
+        self.redo_button.setText(t["redo"])
+        self.delete_button.setText(t["delete"])
+        self.zoom_in_button.setText(t["zoom_in"])
+        self.zoom_out_button.setText(t["zoom_out"])
+        self.zoom_100_button.setText(t["zoom_100"])
+        self.fit_screen_button.setText(t["fit_screen"])
+        self.select_button.setText(t["select"])
+        self.rect_select_button.setText(t["rect_select"])
+        self.add_h_line_button.setText(t["add_h_line"])
+        self.add_v_line_button.setText(t["add_v_line"])
+        self.fill_h_button.setText(t["fill_h"])
+        self.fill_v_button.setText(t["fill_v"])
+        self.crop_button.setText(t["crop"])
+        self.calculate_distance_button.setText(t["calculate_distance"])
+        self.help_button.setText(t["help"])
+        
+        # Update language and theme labels
+        self.lang_label.setText(t.get("language", "Language: "))
+        self.theme_label.setText(t["theme"] + ": ")
+        
+        # Update language combo without triggering signal
+        self.language_combo.blockSignals(True)
+        # Save current language code before clearing
+        current_lang_code = self._current_language
+        self.language_combo.clear()
+        self.language_combo.addItems(LANGUAGES.values())
+        self.language_combo.setCurrentText(LANGUAGES[current_lang_code])
+        self.language_combo.blockSignals(False)
+        
+        # Update right panel texts
+        self.add_h_line_btn2.setText(t["add_h_line"])
+        self.add_v_line_btn2.setText(t["add_v_line"])
+        self.delete_line_btn.setText(t["delete_selected"])
+        self.fill_h_btn2.setText(t["fill_h"])
+        self.fill_v_btn2.setText(t["fill_v"])
+        
+        # Update labels
+        self.toolbox_label.setText(t["toolbox"])
+        self.spacing_label.setText(t["spacing"] + ":")
+        self.line_properties_label.setText(t["line_properties"])
+        self.thickness_label.setText(t["thickness"] + ":")
+        self.color_label.setText(t["color"] + ":")
+        self.style_label.setText(t["style"] + ":")
+        
+        # Update style combo
+        self.style_combo.blockSignals(True)
+        current_index = self.style_combo.currentIndex()
+        self.style_combo.clear()
+        self.style_combo.addItems([t["solid"], t["dashed"], t["dotted"]])
+        self.style_combo.setCurrentIndex(current_index)
+        self.style_combo.blockSignals(False)
+        
+        # Update theme combo
+        self.theme_combo.blockSignals(True)
+        theme_names = THEME_NAMES[self._current_language]
+        self.theme_combo.clear()
+        self.theme_combo.addItems([theme_names[key] for key in THEMES.keys()])
+        self.theme_combo.setCurrentText(theme_names[self._current_theme])
+        self.theme_combo.blockSignals(False)
+        
+        # Update selection count label
+        self._update_selection_count_display()
+    
+    def _on_language_changed(self, lang_display: str) -> None:
+        # Find language code from display name
+        lang_code = next((k for k, v in LANGUAGES.items() if v == lang_display), "zh_CN")
+        self._current_language = lang_code
+        self.language_changed.emit(lang_code)
+        # Update all UI texts
+        self._update_ui_texts()
+    
+    def _on_theme_changed(self, theme_display_name: str) -> None:
+        # Find original theme key from display name
+        theme_names = THEME_NAMES[self._current_language]
+        theme_key = next((k for k, v in theme_names.items() if v == theme_display_name), "暗色标准")
+        self._current_theme = theme_key
+        self.theme_changed.emit(theme_key)
         self._apply_theme()
 
     def _on_calculate_distance_clicked(self) -> None:
@@ -972,11 +1082,11 @@ class MainWindow(QMainWindow):
             self.calculate_distance_button.setStyleSheet("")
 
     def show_distance_dialog(self, distance: int, line1_pos: int, line2_pos: int) -> None:
-        dialog = DistanceDialog(self, distance, line1_pos, line2_pos)
+        dialog = DistanceDialog(self, distance, line1_pos, line2_pos, self._current_language)
         dialog.exec()
 
     def _on_help_clicked(self) -> None:
-        dialog = HelpDialog(self)
+        dialog = HelpDialog(self, self._current_language)
         dialog.exec()
 
     def _apply_theme(self) -> None:
@@ -988,14 +1098,16 @@ class MainWindow(QMainWindow):
             QToolBar {{
                 background-color: {theme['panel']};
                 border: none;
-                spacing: 3px;
+                spacing: 6px;
+                padding: 8px 10px;
             }}
-            QPushButton {{
+            QToolBar QPushButton {{
                 background-color: {theme['button']};
                 color: {theme['text']};
                 border: 1px solid {theme['border']};
-                padding: 5px 10px;
-                border-radius: 3px;
+                padding: 8px 14px;
+                border-radius: 4px;
+                min-height: 24px;
             }}
             QPushButton:hover {{
                 background-color: {theme['button_hover']};
@@ -1047,9 +1159,9 @@ class MainWindow(QMainWindow):
         self.delete_button.setEnabled(enabled)
 
     def set_fill_buttons_enabled(self, has_h_line: bool, has_v_line: bool) -> None:
-        self.fill_h_btn.setEnabled(has_h_line)
+        self.fill_h_button.setEnabled(has_h_line)
         self.fill_h_btn2.setEnabled(has_h_line)
-        self.fill_v_btn.setEnabled(has_v_line)
+        self.fill_v_button.setEnabled(has_v_line)
         self.fill_v_btn2.setEnabled(has_v_line)
 
     def set_cropping_mode(self, is_cropping: bool) -> None:
@@ -1061,7 +1173,17 @@ class MainWindow(QMainWindow):
             self.crop_button.setStyleSheet("")
 
     def set_selection_count(self, count: int) -> None:
-        self.selection_count_label.setText(f"当前选中：{count} 条线")
+        self._current_selection_count = count
+        self._update_selection_count_display()
+    
+    def _update_selection_count_display(self) -> None:
+        """Update selection count label text based on current language"""
+        if hasattr(self, '_current_selection_count'):
+            count = self._current_selection_count
+        else:
+            count = 0
+        t = TRANSLATIONS[self._current_language]
+        self.selection_count_label.setText(t["selection_count"].format(count=count))
 
     def get_spacing(self) -> int:
         return self.spacing_spinbox.value()
@@ -1081,15 +1203,17 @@ class MainWindow(QMainWindow):
         self.style_combo.blockSignals(False)
 
     def show_file_dialog(self) -> str | None:
+        t = TRANSLATIONS[self._current_language]
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "打开图片",
+            t["open_image"],
             "",
-            "图片文件 (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;所有文件 (*)"
+            t["image_files"]
         )
         return file_path if file_path else None
 
     def show_export_dialog(self) -> str | None:
+        t = TRANSLATIONS[self._current_language]
         # 获取项目根目录
         project_root = Path(__file__).parent.parent
         output_dir = project_root / "output"
@@ -1102,9 +1226,9 @@ class MainWindow(QMainWindow):
         
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "导出图片",
+            t["export_image"],
             default_path,
-            "PNG 图片 (*.png);;JPG 图片 (*.jpg *.jpeg)"
+            f"{t['png_image']};;{t['jpg_image']}"
         )
         return file_path if file_path else None
 
@@ -1123,19 +1247,19 @@ class MainWindow(QMainWindow):
         self.canvas.set_adding_mode(orientation)
         theme = THEMES[self._current_theme]
         if orientation == 'horizontal':
-            self.add_h_line_btn.setStyleSheet(f"background-color: {theme['accent']};")
+            self.add_h_line_button.setStyleSheet(f"background-color: {theme['accent']};")
             self.add_h_line_btn2.setStyleSheet(f"background-color: {theme['accent']};")
-            self.add_v_line_btn.setStyleSheet("")
+            self.add_v_line_button.setStyleSheet("")
             self.add_v_line_btn2.setStyleSheet("")
         elif orientation == 'vertical':
-            self.add_v_line_btn.setStyleSheet(f"background-color: {theme['accent']};")
+            self.add_v_line_button.setStyleSheet(f"background-color: {theme['accent']};")
             self.add_v_line_btn2.setStyleSheet(f"background-color: {theme['accent']};")
-            self.add_h_line_btn.setStyleSheet("")
+            self.add_h_line_button.setStyleSheet("")
             self.add_h_line_btn2.setStyleSheet("")
         else:
-            self.add_h_line_btn.setStyleSheet("")
+            self.add_h_line_button.setStyleSheet("")
             self.add_h_line_btn2.setStyleSheet("")
-            self.add_v_line_btn.setStyleSheet("")
+            self.add_v_line_button.setStyleSheet("")
             self.add_v_line_btn2.setStyleSheet("")
 
     def refresh_canvas(self) -> None:

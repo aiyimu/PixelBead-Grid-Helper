@@ -16,6 +16,7 @@ class Controller:
 
     def _connect_signals(self) -> None:
         self._view.open_image_requested.connect(self._on_open_image)
+        self._view.file_dropped.connect(self._on_file_dropped)
         self._view.add_horizontal_line_requested.connect(self._on_add_h_line)
         self._view.add_vertical_line_requested.connect(self._on_add_v_line)
         self._view.delete_line_requested.connect(self._on_delete_selected_lines)
@@ -45,6 +46,17 @@ class Controller:
 
     def _on_open_image(self) -> None:
         file_path = self._view.show_file_dialog()
+        if file_path and self._model.load_image(file_path):
+            self._model.deselect_all()
+            self._view.display_image(self._model.qpixmap)
+            self._view.set_canvas_grid_lines(self._model.grid_lines)
+            self._view.set_canvas_selected_line_ids(self._model.selected_line_ids)
+            self._adding_orientation = None
+            self._view.set_canvas_adding_mode(None)
+            self._update_selection_ui()
+
+    def _on_file_dropped(self, file_path: str) -> None:
+        """Handle file dropped on canvas"""
         if file_path and self._model.load_image(file_path):
             self._model.deselect_all()
             self._view.display_image(self._model.qpixmap)

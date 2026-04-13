@@ -4,8 +4,8 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QToolBar, QPushButton, QLabel, QFrame, QScrollArea, QFileDialog, QComboBox, QSpinBox, QDialog, QTextEdit, QSlider, QColorDialog
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QRect, QSize
-from PyQt6.QtGui import QPixmap, QPainter, QPen, QCursor, QShortcut, QKeySequence, QColor, QBrush, QWheelEvent, QMouseEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QRect, QSize, QMimeData
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QCursor, QShortcut, QKeySequence, QColor, QBrush, QWheelEvent, QMouseEvent, QDragEnterEvent, QDropEvent
 from locales import TRANSLATIONS, LANGUAGES, THEME_NAMES
 
 
@@ -139,6 +139,7 @@ class CanvasWidget(QWidget):
     select_all_requested = pyqtSignal()
     deselect_all_requested = pyqtSignal()
     calculate_distance_line_selected = pyqtSignal(int)
+    file_dropped = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -179,6 +180,7 @@ class CanvasWidget(QWidget):
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAcceptDrops(True)
         self._apply_theme()
 
     def set_theme(self, theme_name: str) -> None:
@@ -655,6 +657,31 @@ class CanvasWidget(QWidget):
         painter.end()
         return result
 
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        """Handle drag enter event to accept image files"""
+        if event.mimeData().hasUrls():
+            # Check if any of the URLs are image files
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    # Check if it's an image file
+                    ext = Path(file_path).suffix.lower()
+                    if ext in ['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp']:
+                        event.acceptProposedAction()
+                        return
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        """Handle drop event to load image file"""
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    ext = Path(file_path).suffix.lower()
+                    if ext in ['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp']:
+                        self.file_dropped.emit(file_path)
+                        event.acceptProposedAction()
+                        return
+
 
 class MainWindow(QMainWindow):
     open_image_requested = pyqtSignal()
@@ -676,6 +703,7 @@ class MainWindow(QMainWindow):
     style_changed = pyqtSignal(str)
     calculate_distance_requested = pyqtSignal()
     language_changed = pyqtSignal(str)
+    file_dropped = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -798,6 +826,8 @@ class MainWindow(QMainWindow):
 
         self.canvas = CanvasWidget()
         scroll_area.setWidget(self.canvas)
+        # Connect file dropped signal
+        self.canvas.file_dropped.connect(self.file_dropped.emit)
 
         main_layout.addWidget(scroll_area, stretch=3)
 
